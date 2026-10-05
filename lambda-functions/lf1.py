@@ -24,6 +24,9 @@ def get_slot_value(slots, slot_name):
 
 
 def elicit_slot(intent, slot_name, message):
+    """
+    Ask the user for a slot again.
+    """
     return {
         "sessionState": {
             "dialogAction": {
@@ -42,6 +45,9 @@ def elicit_slot(intent, slot_name, message):
 
 
 def delegate(intent):
+    """
+    Tell Lex to continue collecting the remaining slots.
+    """
     return {
         "sessionState": {
             "dialogAction": {
@@ -53,6 +59,9 @@ def delegate(intent):
 
 
 def close_intent(intent_name, message):
+    """
+    Finish an intent and return a message to the user.
+    """
     return {
         "sessionState": {
             "dialogAction": {
@@ -79,28 +88,63 @@ def lambda_handler(event, context):
     intent = event["sessionState"]["intent"]
     intent_name = intent["name"]
 
+    # -------------------------------------------------
     # GreetingIntent
+    # -------------------------------------------------
     if intent_name == "GreetingIntent":
         return close_intent(
             intent_name,
             "Hi! How can I help you today?"
         )
 
+    # -------------------------------------------------
     # ThankYouIntent
+    # -------------------------------------------------
     if intent_name == "ThankYouIntent":
         return close_intent(
             intent_name,
             "You're welcome! Have a great day!"
         )
 
+    # -------------------------------------------------
+    # FallbackIntent
+    # -------------------------------------------------
+    if intent_name == "FallbackIntent":
+        return close_intent(
+            intent_name,
+            (
+                "Sorry, I didn't understand that. "
+                "I can help you find restaurant recommendations "
+                "in Manhattan. You can say, "
+                "\"I want restaurant recommendations.\""
+            )
+        )
+
+    # -------------------------------------------------
     # DiningSuggestionsIntent
+    # -------------------------------------------------
     if intent_name == "DiningSuggestionsIntent":
+
         slots = intent.get("slots") or {}
 
-        location = get_slot_value(slots, "Location")
-        cuisine = get_slot_value(slots, "Cuisine")
+        location = get_slot_value(
+            slots,
+            "Location"
+        )
 
+        cuisine = get_slot_value(
+            slots,
+            "Cuisine"
+        )
+
+        number_of_people = get_slot_value(
+            slots,
+            "NumberOfPeople"
+        )
+
+        # ---------------------------------------------
         # Validate location
+        # ---------------------------------------------
         if location and location.lower() not in {
             "manhattan",
             "new york",
@@ -112,35 +156,100 @@ def lambda_handler(event, context):
             return elicit_slot(
                 intent,
                 "Location",
-                "Sorry, I can only provide restaurant suggestions for Manhattan. Please enter Manhattan as your location."
+                (
+                    "Sorry, I can only provide restaurant "
+                    "suggestions for Manhattan. "
+                    "Please enter Manhattan as your location."
+                )
             )
 
+        # ---------------------------------------------
         # Validate cuisine
+        # ---------------------------------------------
         if cuisine and cuisine.lower() not in VALID_CUISINES:
             slots["Cuisine"] = None
 
             return elicit_slot(
                 intent,
                 "Cuisine",
-                "Sorry, I currently support Chinese, Italian, Indian, Japanese, and Mexican cuisine. Which one would you like?"
+                (
+                    "Sorry, I currently support Chinese, "
+                    "Italian, Indian, Japanese, and Mexican "
+                    "cuisine. Which one would you like?"
+                )
             )
 
-        # Lex is still collecting slots
+        # ---------------------------------------------
+        # Validate number of people
+        # ---------------------------------------------
+        if number_of_people:
+            try:
+                if int(number_of_people) <= 0:
+                    slots["NumberOfPeople"] = None
+
+                    return elicit_slot(
+                        intent,
+                        "NumberOfPeople",
+                        (
+                            "The number of people must be at "
+                            "least 1. How many people are in "
+                            "your party?"
+                        )
+                    )
+
+            except ValueError:
+                slots["NumberOfPeople"] = None
+
+                return elicit_slot(
+                    intent,
+                    "NumberOfPeople",
+                    (
+                        "Please enter a valid number of people, "
+                        "such as 2."
+                    )
+                )
+
+        # ---------------------------------------------
+        # Dialog code hook:
+        # Lex is still collecting information.
+        # ---------------------------------------------
         invocation_source = event.get("invocationSource")
 
         if invocation_source == "DialogCodeHook":
             return delegate(intent)
 
-        # All slots have been collected, so fulfillment begins
+        # ---------------------------------------------
+        # Fulfillment:
+        # All required slots have been collected.
+        # ---------------------------------------------
         dining_request = {
-            "Location": get_slot_value(slots, "Location"),
-            "Cuisine": get_slot_value(slots, "Cuisine"),
-            "DiningDate": get_slot_value(slots, "DiningDate"),
-            "DiningTime": get_slot_value(slots, "DiningTime"),
-            "NumberOfPeople": get_slot_value(slots, "NumberOfPeople"),
-            "Email": get_slot_value(slots, "Email")
+            "Location": get_slot_value(
+                slots,
+                "Location"
+            ),
+            "Cuisine": get_slot_value(
+                slots,
+                "Cuisine"
+            ),
+            "DiningDate": get_slot_value(
+                slots,
+                "DiningDate"
+            ),
+            "DiningTime": get_slot_value(
+                slots,
+                "DiningTime"
+            ),
+            "NumberOfPeople": get_slot_value(
+                slots,
+                "NumberOfPeople"
+            ),
+            "Email": get_slot_value(
+                slots,
+                "Email"
+            )
         }
 
+        # Send completed dining request to SQS Q1
         sqs.send_message(
             QueueUrl=QUEUE_URL,
             MessageBody=json.dumps(dining_request)
@@ -148,11 +257,19 @@ def lambda_handler(event, context):
 
         return close_intent(
             intent_name,
-            "You're all set! I will send restaurant recommendations to your email shortly."
+            (
+                "You're all set! I will send restaurant "
+                "recommendations to your email shortly."
+            )
         )
 
-    # Safety fallback
+    # -------------------------------------------------
+    # Safety fallback for any unexpected intent
+    # -------------------------------------------------
     return close_intent(
         intent_name,
-        "Sorry, I couldn't process that request."
+        (
+            "Sorry, I couldn't process that request. "
+            "Please try again."
+        )
     )
