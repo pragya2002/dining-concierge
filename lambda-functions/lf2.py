@@ -1,6 +1,6 @@
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 import boto3
 import urllib3
@@ -8,6 +8,9 @@ import urllib3
 sqs = boto3.client("sqs")
 ses = boto3.client("ses")
 table = boto3.resource("dynamodb").Table("yelp-restaurants")
+# Extra credit: remembers each user's last search
+state_table = boto3.resource("dynamodb").Table(
+    os.environ.get("STATE_TABLE", "user-search-state"))
 http = urllib3.PoolManager()
 
 QUEUE_URL = os.environ["QUEUE_URL"]
@@ -43,14 +46,39 @@ def get_details(ids):
 
 
 def build_email(req, restaurants):
-    date = datetime.strptime(
-        req["DiningDate"], "%Y-%m-%d").strftime("%A, %B %-d")
-    time = datetime.strptime(req["DiningTime"], "%H:%M").strftime("%-I:%M %p")
     lines = [f"{n}. {r.get('Name')}, located at {r.get('Address')}"
              for n, r in enumerate(restaurants, 1)]
-    return (f"Hello! Here are my {req['Cuisine'].title()} restaurant suggestions for "
-            f"{req['NumberOfPeople']} people, for {date} at {time}:\n\n"
-            + "\n".join(lines) + "\n\nEnjoy your meal!")
+    cuisine = req["Cuisine"].title()
+
+    if req.get("ReuseLast"):
+        intro = (f"Welcome back! Here are the same {cuisine} restaurant "
+                 f"suggestions you received last time:")
+    else:
+        date = datetime.strptime(
+            req["DiningDate"], "%Y-%m-%d").strftime("%A, %B %-d")
+        time = datetime.strptime(
+            req["DiningTime"], "%H:%M").strftime("%-I:%M %p")
+        intro = (f"Hello! Here are my {cuisine} restaurant suggestions for "
+                 f"{req['NumberOfPeople']} people, for {date} at {time}:")
+
+    return intro + "\n\n" + "\n".join(lines) + "\n\nEnjoy your meal!"
+
+
+def save_state(req, restaurants):
+    """Extra credit: remember this user's last search and results."""
+    request = {k: req[k] for k in
+               ("Location", "Cuisine", "DiningDate",
+                "DiningTime", "NumberOfPeople", "Email")
+               if req.get(k)}
+    state_table.put_item(Item={
+        "UserID": req["UserID"],
+        "Location": req.get("Location", "").lower(),
+        "Cuisine": req["Cuisine"].lower(),
+        "Request": request,
+        "Restaurants": [{"Name": r.get("Name"), "Address": r.get("Address")}
+                        for r in restaurants],
+        "UpdatedAt": datetime.now(timezone.utc).isoformat(),
+    })
 
 
 def lambda_handler(event, context):
@@ -59,7 +87,11 @@ def lambda_handler(event, context):
     for m in msgs:
         try:
             req = json.loads(m["Body"])
-            restaurants = get_details(random_restaurant_ids(req["Cuisine"]))
+            if req.get("ReuseLast") and req.get("Restaurants"):
+                restaurants = req["Restaurants"]  # same as last time
+            else:
+                restaurants = get_details(
+                    random_restaurant_ids(req["Cuisine"]))
             ses.send_email(
                 Source=SENDER,
                 Destination={"ToAddresses": [req["Email"]]},
@@ -68,6 +100,8 @@ def lambda_handler(event, context):
                     "Body": {"Text": {"Data": build_email(req, restaurants)}},
                 },
             )
+            if req.get("UserID"):
+                save_state(req, restaurants)
             sqs.delete_message(QueueUrl=QUEUE_URL,
                                ReceiptHandle=m["ReceiptHandle"])
             print("Sent suggestions to", req["Email"])
