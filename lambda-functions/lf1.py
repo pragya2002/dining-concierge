@@ -5,6 +5,11 @@ import boto3
 sqs = boto3.client("sqs")
 QUEUE_URL = os.environ["QUEUE_URL"]
 
+# Extra credit: table that remembers each user's last search
+state_table = boto3.resource("dynamodb").Table(
+    os.environ.get("STATE_TABLE", "user-search-state")
+)
+
 VALID_CUISINES = {
     "chinese",
     "italian",
@@ -12,6 +17,34 @@ VALID_CUISINES = {
     "japanese",
     "mexican"
 }
+
+
+VALID_LOCATIONS = {
+    "manhattan",
+    "new york",
+    "new york city",
+    "nyc"
+}
+
+YES_VALUES = {"yes", "yeah", "yep", "sure", "ok", "okay", "y"}
+
+
+def normalize_location(location):
+    """Treat every accepted spelling of Manhattan as the same location."""
+    if location and location.lower() in VALID_LOCATIONS:
+        return "manhattan"
+    return (location or "").lower()
+
+
+def get_last_search(user_id):
+    """Return the user's last saved search from DynamoDB, or None."""
+    if not user_id:
+        return None
+    try:
+        return state_table.get_item(Key={"UserID": user_id}).get("Item")
+    except Exception as e:
+        print("Could not read search state:", e)
+        return None
 
 
 def get_slot_value(slots, slot_name):
@@ -145,12 +178,7 @@ def lambda_handler(event, context):
         # ---------------------------------------------
         # Validate location
         # ---------------------------------------------
-        if location and location.lower() not in {
-            "manhattan",
-            "new york",
-            "new york city",
-            "nyc"
-        }:
+        if location and location.lower() not in VALID_LOCATIONS:
             slots["Location"] = None
 
             return elicit_slot(
@@ -210,6 +238,62 @@ def lambda_handler(event, context):
                 )
 
         # ---------------------------------------------
+        # Extra credit: same location and cuisine as
+        # the user's last search? Offer to repeat it.
+        # ---------------------------------------------
+        user_id = event.get("sessionId")
+
+        if location and cuisine:
+            last = get_last_search(user_id)
+
+            same_search = bool(
+                last
+                and normalize_location(last.get("Location"))
+                == normalize_location(location)
+                and last.get("Cuisine", "").lower() == cuisine.lower()
+            )
+
+            reuse_answer = get_slot_value(slots, "ReuseLast")
+
+            if same_search and reuse_answer is None:
+                return elicit_slot(
+                    intent,
+                    "ReuseLast",
+                    (
+                        f"Welcome back! Last time you also searched for "
+                        f"{cuisine.title()} food in Manhattan. Would you "
+                        f"like the same recommendations as last time? "
+                        f"(yes/no)"
+                    )
+                )
+
+            if (
+                same_search
+                and reuse_answer
+                and reuse_answer.lower() in YES_VALUES
+            ):
+                repeat_request = dict(last.get("Request", {}))
+                repeat_request.update({
+                    "UserID": user_id,
+                    "ReuseLast": True,
+                    "Restaurants": last.get("Restaurants", [])
+                })
+
+                sqs.send_message(
+                    QueueUrl=QUEUE_URL,
+                    MessageBody=json.dumps(repeat_request, default=str)
+                )
+
+                return close_intent(
+                    intent_name,
+                    (
+                        f"Great! I'll send the same "
+                        f"{cuisine.title()} recommendations to "
+                        f"{repeat_request.get('Email')} shortly."
+                    )
+                )
+
+        # ---------------------------------------------
         # Dialog code hook:
         # Lex is still collecting information.
         # ---------------------------------------------
@@ -246,7 +330,8 @@ def lambda_handler(event, context):
             "Email": get_slot_value(
                 slots,
                 "Email"
-            )
+            ),
+            "UserID": event.get("sessionId")
         }
 
         # Send completed dining request to SQS Q1
