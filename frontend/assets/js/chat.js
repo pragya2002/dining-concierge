@@ -1,13 +1,24 @@
 var checkout = {};
 
-var sessionId = 'session-' + Date.now();
+// Extra credit: keep the same id per browser so the bot can recognise
+// a returning user and remember their last search.
+var sessionId = (function () {
+  var key = 'diningConciergeUserId';
+  var id = null;
+  try { id = localStorage.getItem(key); } catch (e) { }
+  if (!id) {
+    id = 'user-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+    try { localStorage.setItem(key, id); } catch (e) { }
+  }
+  return id;
+})();
 
-$(document).ready(function() {
+$(document).ready(function () {
   var $messages = $('.messages-content'),
     d, h, m,
     i = 0;
 
-  $(window).load(function() {
+  $(window).load(function () {
     $messages.mCustomScrollbar();
     insertResponseMessage('Hi there, I\'m your personal Concierge. How can I help?');
   });
@@ -33,9 +44,9 @@ $(document).ready(function() {
       messages: [{
         type: 'unstructured',
         unstructured: {
-  id: sessionId,
-  text: message
-}
+          id: sessionId,
+          text: message
+        }
       }]
     }, {});
   }
@@ -68,7 +79,7 @@ $(document).ready(function() {
 
               insertResponseMessage(message.structured.text);
 
-              setTimeout(function() {
+              setTimeout(function () {
                 html = '<img src="' + message.structured.payload.imageUrl + '" witdth="200" height="240" class="thumbnail" /><b>' +
                   message.structured.payload.name + '<br>$' +
                   message.structured.payload.price +
@@ -90,11 +101,11 @@ $(document).ready(function() {
       });
   }
 
-  $('.message-submit').click(function() {
+  $('.message-submit').click(function () {
     insertMessage();
   });
 
-  $(window).on('keydown', function(e) {
+  $(window).on('keydown', function (e) {
     if (e.which == 13) {
       insertMessage();
       return false;
@@ -105,7 +116,7 @@ $(document).ready(function() {
     $('<div class="message loading new"><figure class="avatar"><img src="https://media.tenor.com/images/4c347ea7198af12fd0a66790515f958f/tenor.gif" /></figure><span></span></div>').appendTo($('.mCSB_container'));
     updateScrollbar();
 
-    setTimeout(function() {
+    setTimeout(function () {
       $('.message.loading').remove();
       $('<div class="message new"><figure class="avatar"><img src="https://media.tenor.com/images/4c347ea7198af12fd0a66790515f958f/tenor.gif" /></figure>' + content + '</div>').appendTo($('.mCSB_container')).addClass('new');
       setDate();
